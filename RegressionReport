@@ -1,0 +1,938 @@
+! Dashboard Regression Report
+! File names have been redacted
+!
+! Multidimensional array mapping
+!
+! DEBTCNT ARRAY
+!
+! Array 1 - number of guarantors
+! Array 2 - amount for guarantors in range
+! Array 3 - balance for guarantors in range
+!
+! 1 - 1 account under master
+! 2 - 2-5 accounts under master
+! 3 - 6-10 accounts under master
+! 4 - 11-15 accounts under master
+! 5 - 16-20 accounts under master
+! 6 - 21-30 accounts under master
+! 7 - 31-50 accounts under master
+! 8 - 51-9999 accounts under master
+
+! BALRANGE ARRAY
+!
+! Array 1 - number of accounts
+! Array 2 - total amount in range
+! Array 3 - Guarantors containing acounts in range
+! Array 4 - Amount Collected in range
+!
+! 1 - 0.00-25.00 balance
+! 2 - 25.01-50.00 balance
+! 3 - 50.01-100.00 balance
+! 4 - 100.01-200.00 balance
+! 5 - 200.01-300.00 balance
+! 6 - 300.01-400.00 balance
+! 7 - 400.01-500.00 balance
+! 8 - 500.01-1000.00 balance
+! 9 - 1000.01-3000.00 balance
+! 10 - 300.01-10000.00 balance
+! 11 - over 10000.00 balance
+
+! ACCTSTATUS ARRAY
+!
+! Array 1 - accounts in status grouping
+! Array 2 - amount for status grouping
+! Array 3 - balance for status grouping
+!
+! 1 - Active
+! 2 - PIF accounts
+! 3 - SIF accounts
+! 4 - Deceased
+! 5 - Bankruptcy
+! 6 - Insurance Hold
+! 7 - Cancelled
+! 8 - Disupted 
+! 9 - Payment Arrangement
+
+! error catching
+IF ERR 0 GOTO ERR_HANDLER
+
+! declare schema structures
+DEF DM% AS 1%,CHAN,FIELD[60,2],INDEX[20,15]
+DIM DM%,XREF!,CLT!,ACCT!,DEBT!,COMP!,TRAN!
+
+! declare variables
+DO_DIMS:
+	DIM TMP$[100],TMP2$[100]
+	DIM XFILE$[100]
+	DIM CONUM$[4]
+	DIM CLT_TABLE$[20]
+	DIM STS_TABLE$[20]
+	DIM SC$[3]
+	DIM A$[100],AC$[100]
+	DIM D$[100],DC$[100]
+	DIM S$[100]
+	DIM T$[100],TC$[100]
+	DIM MASK$[100]
+	DIM PROGRESS$[20]
+	DIM EMPTY$[20]
+	DIM SYS$[300]
+	DIM MSG$[100]
+	DIM HEADER$[100]
+	DIM DATESTAMP$[20],TODAY$[20]
+	DIM COMPADDR1$[29],COMPADDR2$[29],COMPCITY$[19],COMPSTZIP$[14],COMPPHONE$[29]
+	DIM 3%,DEBTCNT[3,8],BALRANGE[4,11],ACCTSTATUS[3,9]
+	DIM 3%
+
+! set default variables
+DO_SETS:
+	CALL $CHNLNO,TMPCH
+	OPEN #TMPCH,"10/COLLDATE"
+	READ #TMPCH,SPC(6),15;CONUM$;									! get the company LU
+	CLOSE #TMPCH
+
+	MASK$="&",MASK$
+	PROGRESS$="#",PROGRESS$
+	EMPTY$="-",EMPTY$
+	TODAY=INT(DTNOW(0))
+	TODAY$=DTFORMAT$(TODAY,"MM/DD/YYYY")
+	DATESTAMP$=DTFORMAT$(DTNOW(0),"MMDDYYYY_HHNNSS")
+
+! open files
+DO_OPENS:
+	XFILE$=CONUM$[3,3],"/XREFFILE"								! xref file
+	CALL "FOPEN",XREF!,-1,XFILE$,-2,OUTSTAT					! open the file
+	IF RET<>0 GOTO FILE_FAILURE
+	RS=XREF!.FIELD[0,1]												! the record size
+	DIM XREF$[RS]	
+
+	XFILE$=CONUM$[3,3],"/CLIENTFILE"								! client file
+	CALL "FOPEN",CLT!,-1,XFILE$,-2,OUTSTAT						! open the file
+	IF RET<>0 GOTO FILE_FAILURE
+	RS=CLT!.FIELD[0,1]												! the record size
+	DIM CLT$[RS]	
+
+	XFILE$=CONUM$[3,3],"/ACCOUNTFILE"							! account file
+	CALL "FOPEN",ACCT!,-1,XFILE$,-2,OUTSTAT					! open the file
+	IF RET<>0 GOTO FILE_FAILURE
+	RS=ACCT!.FIELD[0,1]												! the record size
+	DIM ACCT$[RS],ACCTCHK$[RS]	
+
+	XFILE$=CONUM$[3,3],"/CEBTORFILE"								! debtor file
+	CALL "FOPEN",DEBT!,-1,XFILE$,-2,OUTSTAT					! open the file
+	IF RET<>0 GOTO FILE_FAILURE
+	RS=DEBT!.FIELD[0,1]												! the record size
+	DIM DEBT$[RS]
+
+	XFILE$=CONUM$[3,3],"/TRANSACTIONFILE"						! transaction file
+	CALL "FOPEN",TRAN!,-1,XFILE$,-2,OUTSTAT					! open the file
+	IF RET<>0 GOTO FILE_FAILURE
+	RS=TRAN!.FIELD[0,1]												! the record size
+	DIM TRAN$[RS]	
+
+	XFILE$="10/COMPANYFILE"											! company
+	CALL "FOPEN",COMP!,-1,XFILE$,-2,OUTSTAT					! open the file
+	IF RET<>0 GOTO FILE_FAILURE
+	RS=COMP!.FIELD[0,1]												! the record size
+	DIM COMP$[RS]
+
+	GOSUB BUILD_SCRATCH
+
+	GOSUB GET_COMPANY_INFO
+
+! program main entry point
+DO_MAIN:
+	GOSUB DO_PROMPTS
+	GOSUB CLT_DRIVE
+	IF COMBINED
+		GOSUB PRINT_REPORT
+	ENDIF
+	GOTO FINISH
+
+! build a temporary index file for sorting
+BUILD_SCRATCH:
+	RS=1                                          ! record size
+	XFILE$="/u/sting/tmp/",CONUM$[1,1],"_C500154b.SCRATCH@"
+
+	CALL $FINDF,XFILE$,RET
+	IF RET
+		SYS$="rm ",XFILE$,".[rx]"                    ! remove existing scratch file
+		SYSTEM SYS$
+	ENDIF
+
+	! 1 - Master Number(8)
+	SYS$="xibld -n -i0 -r",RS," -d1:8 ",XFILE$,"!"
+	SYSTEM SYS$	                                    ! build new scratch file
+
+	SYS$="chmod 666 ",XFILE$,".[rx]"
+	SYSTEM SYS$		                                 ! update scratch perms
+
+	CALL $CHNLNO,SCRATCH                            ! open scratch file
+	OPEN #SCRATCH,XFILE$
+RETURN
+
+! build an output csv file for the reports
+BUILD_OUTPUT_FILE:
+	XFILE$="/u/sting/tapefiles/C500154/DASHBOARD/",HEADER$,"_",DATESTAMP$,".csv!"
+	CALL $CHNLNO,PUTCH
+	BUILD #PUTCH,+XFILE$
+RETURN
+
+! iterate through every client selected
+CLT_DRIVE:
+	IF COMBINED
+		GOSUB SCAN_ACCOUNTS_COMBINED
+	ENDIF
+
+	DONE=FALSE \ CLT=-1 \ MODE=3
+	CALL "CltTable",CLT_TABLE$,CLT,MODE,DONE,CONUM$[1,1]
+
+	WHILE NOT DONE
+		MAT READ #CLT!.CHAN,CLT,0;CLT$;                    ! read in the client info
+
+		IF CLT$[1,3]<>"EEE"
+			IF NOT COMBINED
+				GOSUB SCAN_ACCOUNTS									! total number of accounts to process
+			ENDIF
+
+			GOSUB FIND_ACCOUNTS
+
+			IF NOT COMBINED
+				GOSUB PRINT_REPORT
+				GOSUB RESET
+			ENDIF
+		ENDIF
+
+		MODE=3 \ DONE=FALSE                                ! handle the next client
+		CALL "CltTable",CLT_TABLE$,CLT,MODE,DONE,CONUM$[1,1]
+	WEND
+RETURN
+
+! determine how many accounts need to be processed in a combined report
+SCAN_ACCOUNTS_COMBINED:
+	HEADER$=CLT_TABLE$
+	CALL $RSPCS,HEADER$,HEADER$,0
+	CALL $STRSRCH,HEADER$,"/",P
+	WHILE P
+		HEADER$[P,P]="-"
+		CALL $STRSRCH,HEADER$,"/",P
+	WEND
+
+	PRINT @5,ROW+3;"Processing ";HEADER$;":"
+	TOSCAN=0
+
+	DONE=FALSE \ CLT=-1 \ MODE=3
+	CALL "CltTable",CLT_TABLE$,CLT,MODE,DONE,CONUM$[1,1]
+
+	WHILE NOT DONE
+		MAT READ #CLT!.CHAN,CLT,0;CLT$;                    ! read in the client info
+
+		IF CLT$[1,3]<>"EEE"
+			M=ACCT!.INDEX[2,1]										! substring size
+			A$=CLT USING MASK$[1,M]
+			AC$=A$
+			SEARCH #ACCT!.CHAN,3,2;A$,A1,A2
+			WHILE NOT A2 AND A$[1,LEN(AC$)]=AC$
+				TOSCAN=TOSCAN+1
+				SEARCH #ACCT!.CHAN,3,2;A$,A1,A2
+			WEND
+		ENDIF
+
+		MODE=3 \ DONE=FALSE                                ! handle the next client
+		CALL "CltTable",CLT_TABLE$,CLT,MODE,DONE,CONUM$[1,1]
+	WEND
+RETURN
+
+! determine how many accounts need to be processed in an individual report
+SCAN_ACCOUNTS:
+	HEADER$="Client",CLT
+
+	PRINT @5,ROW+3;"Processing ";HEADER$;":"
+	TOSCAN=0
+
+	M=ACCT!.INDEX[2,1]												! substring size
+	A$=CLT USING MASK$[1,M]
+	AC$=A$
+	SEARCH #ACCT!.CHAN,3,2;A$,A1,A2
+	WHILE NOT A2 AND A$[1,LEN(AC$)]=AC$
+		TOSCAN=TOSCAN+1
+		SEARCH #ACCT!.CHAN,3,2;A$,A1,A2
+	WEND
+RETURN
+
+! find all accounts under a specified client
+FIND_ACCOUNTS:
+	M=ACCT!.INDEX[2,1]												! substring size
+	A$=CLT USING MASK$[1,M]
+	AC$=A$
+	SEARCH #ACCT!.CHAN,3,2;A$,A1,A2
+	WHILE NOT A2 AND A$[1,LEN(AC$)]=AC$
+		ACCT=A1
+
+		CNT=CNT+1
+		IF INT(CNT/100)=(CNT/100)
+			GOSUB STATUSBAR
+		ENDIF
+
+		MAT READ #ACCT!.CHAN,A1;ACCT$;
+		
+		OS=ACCT!.FIELD[17,1]											! get status code
+		SC$=ACCT$[OS]
+
+		GOSUB VALIDATE													! valid account?
+
+		IF NOT VALID
+			GOTO NEXT_ACCOUNT
+		ELSE
+			TOTAL_ACCT_CNT=TOTAL_ACCT_CNT+1
+		ENDIF
+
+		GOSUB FIND_TRANSACTIONS										! spin through transactions
+
+		OS=ACCT!.FIELD[1,1]											! master number
+		CALL 73,ACCT$[OS],DEBT
+
+		GOSUB GET_DEBTOR_STATS										! get debtor based stats
+
+		OS=ACCT!.FIELD[25,1]											! amount referred
+		CALL 73,ACCT$[OS],AMTREF
+		TOTAL_AMTREF=TOTAL_AMTREF+AMTREF
+
+		OS=ACCT!.FIELD[22,1]											! date of service
+		CALL 73,ACCT$[OS],DOS
+		AGE=TODAY-DOS													! get account age
+		TOTAL_AGE=TOTAL_AGE+AGE
+
+		GOSUB GET_BALRANGE_POSITION								! returns BRPOS based on acctbal
+		BALRANGE[1,BRPOS]=BALRANGE[1,BRPOS]+1					! increment arrays
+		BALRANGE[2,BRPOS]=BALRANGE[2,BRPOS]+AMTREF			! add amount for BALRANGE array
+
+		GOSUB TOTAL_ACCOUNTS											! get the # accounts under this debtor
+		GOSUB GET_DEBTCNT_POSITION									! returns DCPOS based on acct_cnt
+		DEBTCNT[2,DCPOS]=DEBTCNT[2,DCPOS]+AMTREF				! add amount for DEBTCNT array
+
+		S$=DEBT USING MASK$[1,8]									! form debtor number for scratch search
+		SEARCH #SCRATCH,2,1;S$,S1,S2
+		IF S2																! hasn't been processed yet
+			DEBTCNT[1,DCPOS]=DEBTCNT[1,DCPOS]+1					! increment guarantor count
+			BALRANGE[3,BRPOS]=BALRANGE[3,BRPOS]+1				! increment guarantor count on BALRANGE array
+
+			S$=DEBT USING MASK$[1,8]								! form debtor number for scratch search
+			S1=DEBT \ S2=0
+			SEARCH #SCRATCH,4,1;S$,S1,S2							! insert index that debtor has been processed
+		ENDIF
+
+		ACCTBAL=0														! get account balance
+		FOR FLD=26 TO 30
+			IF FLD<>27													! skip interest, want to know balance otherwise
+				OS=ACCT!.FIELD[FLD,1]
+				CALL 73,ACCT$[OS],TMP
+				ACCTBAL=ACCTBAL+TMP
+			ENDIF
+		NEXT FLD
+		TOTAL_ACCTBAL=TOTAL_ACCTBAL+1
+		DEBTCNT[3,DCPOS]=DEBTCNT[3,DCPOS]+ACCTBAL				! add to DEBTCNT array balance
+		
+		AMT_COLLECTED=AMTREF-ACCTBAL								! calculated amount collected
+		BALRANGE[4,BRPOS]=BALRANGE[4,BRPOS]+AMT_COLLECTED	! add to balrange array amt collected
+
+		GOSUB SORT_STATUS												! add up status code stats
+
+		GOSUB QCAT_SORT												! sort the QCAT types
+
+		NEXT_ACCOUNT:
+		SEARCH #ACCT!.CHAN,3,2;A$,A1,A2
+	WEND
+
+	GOSUB STATUSBAR
+RETURN
+
+! find transactions under a specific account
+FIND_TRANSACTIONS:
+	M=TRAN!.INDEX[1,1]												! substring size
+	T$=ACCT USING MASK$[1,M]
+	TC$=T$
+	SEARCH #TRAN!.CHAN,3,1;T$,T1,T2
+	WHILE NOT T2 AND T$[1,LEN(TC$)]=TC$
+		MAT READ #TRAN!.CHAN,T1;TRAN$;							! read transaction
+
+		OS=TRAN!.FIELD[12,1]											! paid principal
+		CALL 73,TRAN$[OS],PP
+
+		OS=TRAN!.FIELD[5,1]											! type payment
+		IF TRAN$[OS]="AJ" OR TRAN$[OS]="NS"
+			GOTO NEXT_TRANSACTION
+		ELSE IF TRAN$[OS]="DP"										! NSF Logic
+			TOTAL_CLIENT=TOTAL_CLIENT+PP
+		ELSE
+			TOTAL_AGENCY=TOTAL_AGENCY+PP
+		ENDIF
+		TOTAL_PAYMENTS=TOTAL_PAYMENTS+PP
+
+		NEXT_TRANSACTION:
+		SEARCH #TRAN!.CHAN,3,1;T$,T1,T2
+	WEND
+RETURN
+
+! Draws a progress bar on screen
+STATUSBAR:
+	RATIO=CNT/TOSCAN
+	PERCENT=RATIO*100
+	PROGRESS=INT(RATIO*20)
+	EMPTY=20-PROGRESS
+
+	IF PROGRESS>0 AND PROGRESS<20
+		TMP$=PROGRESS$[1,PROGRESS],EMPTY$[1,EMPTY]
+	ELSE IF PROGRESS=20
+		TMP$=PROGRESS$[1,20]
+	ELSE
+		TMP$=EMPTY$[1,20]
+	ENDIF
+
+	TMP2$=PERCENT USING "###.##"
+	CALL $RSPCS,TMP2$,TMP2$,0
+	TMP2$=TMP2$,"%"
+
+	PRINT @5,ROW+3;'CL';"Processing ";HEADER$;": [";TMP$;"]";TMP2$
+RETURN
+
+! checks debtor specific fields
+GET_DEBTOR_STATS:
+	MAT READ #DEBT!.CHAN,DEBT;DEBT$;
+
+	OS=DEBT!.FIELD[8,1]												! bad address flag
+	IF DEBT$[OS,OS]="Y"
+		RETMAIL_CNT=RETMAIL_CNT+1
+	ENDIF
+RETURN
+
+! adds to status type arrays
+SORT_STATUS:
+	GOSUB GET_ACCTSTATUS_POSITION
+
+	ACCTSTATUS[1,ASPOS]=ACCTSTATUS[1,ASPOS]+1					! status grouping count
+	ACCTSTATUS[2,ASPOS]=ACCTSTATUS[2,ASPOS]+AMTREF			! status grouping amount
+	ACCTSTATUS[3,ASPOS]=ACCTSTATUS[3,ASPOS]+ACCTBAL			! status grouping balance
+RETURN
+
+! checks if the account is valid
+VALIDATE:
+	VALID=FALSE
+
+	OS=ACCT!.FIELD[21,1]												! date of referral
+	CALL 73,ACCT$[OS],DOR
+	IF DOR<STARTDATE OR DOR>ENDDATE								! inside date range?
+		RETURN
+	ENDIF
+	
+	IF STS_TABLE$<>""													! exclusion table chosen
+		MODE=2 \ RET=0
+		CALL "StatusTable",STS_TABLE$,SC$,MODE,INCLUDED,CONUM$[1,1]
+		IF NOT INCLUDED												! status code is excluded
+			RETURN
+		ENDIF
+	ENDIF
+
+	VALID=TRUE
+RETURN
+
+! reads in the cmopany information
+GET_COMPANY_INFO:
+	S$=""
+	SEARCH #COMP!.CHAN,3,1;S$,S1,S2
+	WHILE NOT S2
+		MAT READ #COMP!.CHAN,S1;COMP$;
+		OS=COMP!.FIELD[9,1]											! LU
+		IF COMP$[OS]<>CONUM$
+			GOTO NEXT_COMPANY_SEARCH
+		ENDIF
+
+		OS=COMP!.FIELD[2,1]											! Addr1
+		COMPADDR1$=COMP$[OS]
+
+		OS=COMP!.FIELD[3,1]											! Addr2
+		COMPADDR2$=COMP$[OS]
+
+		OS=COMP!.FIELD[4,1]											! City
+		COMPCITY$=COMP$[OS]
+
+		OS=COMP!.FIELD[5,1]											! StZip
+		COMPSTZIP$=COMP$[OS]
+
+		OS=COMP!.FIELD[6,1]											! Phone
+		COMPPHONE$=COMP$[OS]
+
+		NEXT_COMPANY_SEARCH:
+		SEARCH #COMP!.CHAN,3,1;S$,S1,S2
+	WEND
+RETURN
+
+! gets 3d array position based on amount referred
+GET_BALRANGE_POSITION:
+	IF AMTREF<=25
+		BRPOS=1
+	ELSE IF AMTREF<=50
+		BRPOS=2
+	ELSE IF AMTREF<=100
+		BRPOS=3
+	ELSE IF AMTREF<=200
+		BRPOS=4
+	ELSE IF AMTREF<=300
+		BRPOS=5
+	ELSE IF AMTREF<=400
+		BRPOS=6
+	ELSE IF AMTREF<=500
+		BRPOS=7
+	ELSE IF AMTREF<=1000
+		BRPOS=8
+	ELSE IF AMTREF<=3000
+		BRPOS=9
+	ELSE IF AMTREF<=10000
+		BRPOS=10
+	ELSE IF AMTREF>10000
+		BRPOS=11
+	ENDIF
+RETURN
+
+! gets 3d array position based on count of accounts
+GET_DEBTCNT_POSITION:
+	IF ACCT_CNT=1
+		DCPOS=1
+	ELSE IF ACCT_CNT<=5
+		DCPOS=2
+	ELSE IF ACCT_CNT<=10
+		DCPOS=3
+	ELSE IF ACCT_CNT<=15
+		DCPOS=4
+	ELSE IF ACCT_CNT<=20
+		DCPOS=5
+	ELSE IF ACCT_CNT<=30
+		DCPOS=6
+	ELSE IF ACCT_CNT<=50
+		DCPOS=7
+	ELSE IF ACCT_CNT>50
+		DCPOS=8
+	ENDIF
+RETURN
+
+! gets 3d array position based on the account status code
+GET_ACCTSTATUS_POSITION:
+	IF SC$="PIF"
+		ASPOS=2
+	ELSE IF SC$="SIF"
+		ASPOS=3
+	ELSE IF SC$="DEC"
+		ASPOS=4
+	ELSE IF SC$="CBK"
+		ASPOS=5
+	ELSE IF SC$="FUI" OR SC$="FUP"
+		ASPOS=6
+	ELSE IF SC$="CCR"
+		ASPOS=7
+	ELSE IF SC$="DSP"
+		ASPOS=8
+	ELSE IF SC$="PTP" OR SC$="ATR" OR SC$="PWP"
+		ASPOS=9
+	ELSE																! assumed active
+		ASPOS=1
+	ENDIF
+RETURN
+
+! counts the total number of valid accounts under the debtor
+TOTAL_ACCOUNTS:
+	ACCT_CNT=0														! reset accounts under debtor
+
+	M=ACCT!.INDEX[1,1]
+	D$=DEBT USING MASK$[1,M]
+	DC$=D$
+	SEARCH #ACCT!.CHAN,3,1;D$,D1,D2
+	WHILE NOT D2 AND D$[1,LEN(DC$)]=DC$
+
+		MAT READ #ACCT!.CHAN,D1;ACCTCHK$;
+		OS=ACCT!.FIELD[17,1]										! status code
+		TMP$=ACCT$[OS]
+
+		IF STS_TABLE$<>""											! using exclusion table?
+			MODE=2 \ RET=0
+			CALL "StatusTable",STS_TABLE$,TMP$,MODE,INCLUDED,CONUM$[1,1]
+			IF NOT INCLUDED										! status code is excluded
+				GOTO NEXT_ACCOUNT_COUNT
+			ENDIF
+		ENDIF
+
+		OS=ACCT!.FIELD[3,1]										! client
+		CLTCHK=ACCT$[OS]
+
+		IF COMBINED													! combined report?
+			MODE=2													! is it in the client table?
+			CALL "CltTable",CLT_TABLE$,CLTCHK,MODE,EXCLUDED
+			IF EXCLUDED
+				GOTO NEXT_ACCOUNT_COUNT
+			ENDIF
+		ELSE IF CLTCHK<>CLT										! non combined, right client?
+			GOTO NEXT_ACCOUNT_COUNT
+		ENDIF
+
+		ACCT_CNT=ACCT_CNT+1										! count this account
+
+		NEXT_ACCOUNT_COUNT:
+		SEARCH #ACCT!.CHAN,3,1;D$,D1,D2
+	WEND
+RETURN
+
+! checks index file to determins status code category
+QCAT_SORT:
+	TMP$="ARR",SC$
+	SEARCH #XREF!.CHAN,2,1;TMP$,T1,T2
+	IF NOT T2
+		ARRQCAT_CNT=ARRQCAT_CNT+1
+	ENDIF
+
+	TMP$="PTP",SC$
+	SEARCH #XREF!.CHAN,2,1;TMP$,T1,T2
+	IF NOT T2
+		PTPQCAT_CNT=PTPQCAT_CNT+1
+	ENDIF
+
+	TMP$="INS",SC$
+	SEARCH #XREF!.CHAN,2,1;TMP$,T1,T2
+	IF NOT T2
+		INSQCAT_CNT=INSQCAT_CNT+1
+	ENDIF
+RETURN
+
+! prints the report as a csv file
+PRINT_REPORT:
+	GOSUB BUILD_OUTPUT_FILE
+
+	BRPOS=1
+	DCPOS=1
+	ASPOS=1
+
+	AVERAGE_AMOUNT=TOTAL_AMTREF/TOTAL_ACCT_CNT
+	AVERAGE_AGE=TOTAL_AGE/TOTAL_ACCT_CNT
+
+	PRINT #PUTCH;",,,,,,COLLECTION BUREAU OF FT. WALTON BEACH"
+	PRINT #PUTCH;",,,,,,";COMPADDR1$
+	IF LEN(COMPADDR2$)
+		PRINT #PUTCH;",,,,,,";COMPADDR2$
+	ENDIF
+	PRINT #PUTCH;",,,,,,";COMPCITY$;"     ";COMPSTZIP$
+	PRINT #PUTCH;",,,";TODAY$;",,";"Phone ";COMPPHONE$
+	PRINT #PUTCH;HEADER$
+	PRINT #PUTCH;""
+	PRINT #PUTCH;""
+	PRINT #PUTCH;"Start Date: ";DTFORMAT$(STARTDATE,"MM/DD/YYYY");",";
+	PRINT #PUTCH;"End Date: ";DTFORMAT$(ENDDATE,"MM/DD/YYYY")
+	PRINT #PUTCH;""
+	PRINT #PUTCH;"Accounts,Original Amount,Amount Balance,Average Amount,Payments,Client Part, Agency Part"
+	PRINT #PUTCH;TOTAL_ACCT_CNT;",";TOTAL_AMTREF;",";TOTAL_ACCTBAL;",";
+	TMP$=AVERAGE_AMOUNT USING "--------#.&&"
+	CALL $RSPCS,TMP$,TMP$,0
+	PRINT #PUTCH;TMP$;",";TOTAL_PAYMENTS;",";TOTAL_CLIENT;",";TOTAL_AGENCY
+	PRINT #PUTCH;""
+	PRINT #PUTCH;"ACCOUNT AMOUNT RANGE,,ACCOUNTS,AMOUNT,GUARANTORS,AMT.COLLECTED"
+
+	PRINT #PUTCH;"Up to $25.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $25.01 and $50.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $50.01 and $100.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $100.01 and $200.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $200.01 and $300.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $300.01 and $400.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $400.01 and $500.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $500.01 and $1000.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $1000.01 and $3000.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Between $3000.01 and $10000.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;"Over $10000.00,,"; \ GOSUB PRINT_BALRANGE
+	PRINT #PUTCH;""
+
+	PRINT #PUTCH;"Total account amount range,,";TOTAL_ACCT_CNT;",";TOTAL_AMTREF;
+	GUAR_CNT=0
+	AMT_COLLECTED=0
+	FOR I=1 TO 11
+		GUAR_CNT=GUAR_CNT+BALRANGE[3,I]
+		AMT_COLLECTED=AMT_COLLECTED+BALRANGE[4,I]
+	NEXT I
+	PRINT #PUTCH;GUAR_CNT,",";AMT_COLLECTED
+	PRINT #PUTCH;""
+	PRINT #PUTCH;""
+
+	PRINT #PUTCH;"ACCOUNTS BY STATUS,,ACCOUNTS,AMOUNT,BALANCE"
+	PRINT #PUTCH;"Actively Working,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Paid in Full,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Settled in Full,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Deceased,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Bankruptcy,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Insurance Hold,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Cancelled,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Disputed,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;"Payment Arrangement,,"; \ GOSUB PRINT_STATUS
+	PRINT #PUTCH;""
+	PRINT #PUTCH;"Total accounts by status,,";TOTAL_ACCT_CNT;",";TOTAL_AMTREF;",";TOTAL_ACCTBAL
+	PRINT #PUTCH;""
+	PRINT #PUTCH;""
+
+	PRINT #PUTCH;"GUARANTORS WITH NUMBER OF ACCOUNTS,,GUARANTORS,AMOUNT,BALANCE"
+	PRINT #PUTCH;"1 Account,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Between 2 and 5 accounts,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Between 6 and 10 accounts,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Between 11 and 15 accounts,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Between 16 and 20 accounts,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Between 21 and 30 accounts,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Between 31 and 50 accounts,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Between 51 and 9999 accounts,,"; \ GOSUB PRINT_DEBTCNT
+	PRINT #PUTCH;"Totals,,";GUAR_CNT;",";TOTAL_AMTREF;",";TOTAL_ACCTBAL
+	PRINT #PUTCH;""
+	PRINT #PUTCH;""
+
+	PRINT #PUTCH;"Return mail Accounts,,";RETMAIL_CNT
+	PRINT #PUTCH;"Insurance qcat 104,,";INSQCAT_CNT
+	PRINT #PUTCH;"Promise to pay qcat 116,,";PTPQCAT_CNT
+	PRINT #PUTCH;"Pay arrangement qcat 102,,";ARRQCAT_CNT
+	PRINT #PUTCH;""
+	PRINT #PUTCH;"Submissionts,Accounts,Amount,Average Amount,Account Age"
+	PRINT #PUTCH;TOTAL_ACCT_CNT;",";TOTAL_ACCT_CNT;",";TOTAL_AMTREF;",";
+	TMP$=AVERAGE_AMOUNT USING "--------#.&&"
+	CALL $RSPCS,TMP$,TMP$,0
+	PRINT #PUTCH;TMP$;",";
+	PRINT #PUTCH;INT(AVERAGE_AGE)
+
+	CLOSE #PUTCH
+RETURN
+
+! prints a balance segment of the report based on the array
+PRINT_BALRANGE:
+	PRINT #PUTCH;BALRANGE[1,BRPOS];",";
+	PRINT #PUTCH;BALRANGE[2,BRPOS];",";
+	PRINT #PUTCH;BALRANGE[3,BRPOS];",";
+	PRINT #PUTCH;BALRANGE[4,BRPOS]
+
+	BRPOS=BRPOS+1
+RETURN
+
+! prints a debtor count segment of the report based on the array
+PRINT_DEBTCNT:
+	PRINT #PUTCH;DEBTCNT[1,DCPOS];",";
+	PRINT #PUTCH;DEBTCNT[2,DCPOS];",";
+	PRINT #PUTCH;DEBTCNT[3,DCPOS]
+
+	DCPOS=DCPOS+1
+RETURN
+
+! prints a status summary segment of the report based on the array
+PRINT_STATUS:
+	PRINT #PUTCH;ACCTSTATUS[1,ASPOS];",";
+	PRINT #PUTCH;ACCTSTATUS[2,ASPOS];",";
+	PRINT #PUTCH;ACCTSTATUS[3,ASPOS]
+
+	ASPOS=ASPOS+1
+RETURN
+
+! gather user prompts
+DO_PROMPTS:
+	PRINT 'CS'
+	ROW=5
+
+	GOSUB GET_CONTINUE
+	GOSUB GET_COMBINED
+	GOSUB GET_DATERANGE
+	GOSUB GET_CLIENT_TABLE
+	GOSUB ASK_STATUS_TABLE
+	GOTO PAUSE
+RETURN
+
+! resets stats between report runs
+RESET:																	! variables to reset between runs
+	TOTAL_ACCT_CNT=0													! total # of accounts on report
+	TOTAL_ACCTBAL=0													! total account balance
+	TOTAL_AMTREF=0														! total amount referred
+	TOTAL_AGE=0															! total age in days
+	TOTAL_PAYMENTS=0													! total payments
+	TOTAL_AGENCY=0														! total paid to agency
+	TOTAL_CLIENT=0														! total paid to client
+
+	PAYMENTS=0
+	CLIENTPART=0
+	AGENCYPART=0
+
+	FOR X=0 TO 3
+		FOR I=0 TO 8													! debtcnt array
+			DEBTCNT[X,I]=0
+		NEXT I
+	NEXT X
+
+	FOR X=0 TO 4
+		FOR I=0 TO 11													! acctbal array
+			BALRANGE[X,I]=0
+		NEXT I
+	NEXT X
+
+	FOR X=0 TO 3
+		FOR I=0 TO 5
+			ACCTSTATUS[X,I]=0
+		NEXT I
+	NEXT X
+
+	RETMAIL_CNT=0														! returned mail count
+	INSQCAT_CNT=0														! insuarnce qcat count
+	PTPQCAT_CNT=0														! promise to pay count
+	ARRQCAT_CNT=0														! arrangement count
+	NSF_CNT=0															! nsf count
+
+	CNT=0																	! current processing
+RETURN
+
+! prompts user to press enter to continue
+PAUSE:
+	INPUT @27,23;LEN 1;"PRESS ANY KEY TO CONTINUE"TMP$
+	PRINT @0,23;'CL';
+RETURN
+
+GET_DATERANGE:
+	PR=ROW																! prompt row
+	MSG$="START DOR"
+	GOSUB GET_DATE
+	STARTDATE=DATE
+
+	PR=ROW+1
+	MSG$="END DOR"
+	GOSUB GET_DATE
+	ENDDATE=DATE
+	
+	PRINT @5,21;"DO YOU WANT TO CHANGE THE DATES (Y/N) [RET=NO] ";
+	INPUT TMP$
+	PRINT @0,21;'CL';
+	IF TMP$="Y" OR TMP$="y" GOTO GET_DATERANGE
+	ROW=ROW+2
+RETURN
+
+GET_DATE:
+	LEOFF=55																! line edit offset
+	BAD=TRUE
+	WHILE BAD															! get the ending date
+		BAD=FALSE \ CHG=0 \ TMP$=""
+		PRINT @5,PR;'CL';"PLEASE ENTER THE ";MSG$;":";
+		PRINT TAB(LEOFF-3);"-> "
+		CALL "LINEEDIT",TMP$,8,LEOFF,PR,BAD,CHG
+		IF BAD
+			GOTO FINISH													! outa here!
+		ENDIF
+		IF TMP$=""
+			DATE=INT(DTNOW(0))										! today's date...
+		ELSE	
+			CALL "DateChk",TMP$,DATE,RET
+			IF RET<>0 OR DATE=DT_BADDATE
+				TMP2$="INVALID ",MSG$,": ",TMP$,"!"
+				CALL "OKBOX",TMP2$,5,5
+				BAD=TRUE													! try again!
+			ENDIF
+		ENDIF
+	WEND
+
+	PRINT @LEOFF,PR;DTFORMAT$(DATE,"MM/DD/YYYY")
+RETURN
+
+GET_CLIENT_TABLE:
+	MODE=4																! select a clt table
+	CALL "CltTable",CLT_TABLE$,CLT,MODE,RET
+	IF RET<>0															! chk for valid clt table
+		GOTO FINISH
+	ENDIF
+
+	P=0 \ CALL $STRSRCH,CLT_TABLE$,"~Single Clt",P
+	IF P=0 CALL $STRSRCH,CLT_TABLE$,"~SinglePort:",P
+	PP=0 \ CALL $STRSRCH,CLT_TABLE$,"All Clients",PP
+	IF P>0
+		TMP2$="SINGLE CLIENT"
+	ELSE IF PP>0
+		TMP2$="ALL CLIENTS"
+	ELSE
+		TMP2$=CLT_TABLE$
+	ENDIF
+	PRINT @0,ROW;'CL';TAB(5);"CLT TABLE: ";TMP2$;			! display the table to usr
+	ROW=ROW+1
+RETURN
+
+GET_STATUS_TABLE:
+	MODE=4																! select a sts table
+	CALL "StatusTable",STS_TABLE$,SC$,MODE,RET
+	IF RET<>0															! chk for valid sts table
+		STS_TABLE$=""
+	ENDIF
+
+	CALL $STRSRCH,STS_TABLE$,"~SinglePort:",P
+	PP=0 \ CALL $STRSRCH,STS_TABLE$,"All Status Codes",PP
+	IF P>0
+		TMP2$="SINGLE STATUS CODE"
+	ELSE IF PP>0
+		TMP2$="ALL STATUS CODES"
+	ELSE
+		TMP2$=STS_TABLE$
+	ENDIF
+	PRINT @0,ROW;'CL';TAB(5);"STS EXCLUSION TABLE: ";TMP2$;	! display the table to usr
+	ROW=ROW+1
+RETURN
+
+GET_CONTINUE:
+	TMP$=""																! get in the loop
+	WHILE TMP$<>"Y" AND TMP$<>"N"
+		PRINT @0,ROW;'CL';TAB(5);"Would you like to continue (Y/N): ";
+		INPUT ""TMP$
+
+		CALL $STRING,1,TMP$											! to uppercase
+
+		IF TMP$="N"
+			GOTO FINISH
+		ENDIF
+	WEND
+	ROW=ROW+1
+RETURN
+
+ASK_STATUS_TABLE:
+	TMP$=""																! get in the loop
+	WHILE TMP$<>"Y" AND TMP$<>"N"
+		PRINT @0,ROW;'CL';TAB(5);"Use StatusCode Exclusion Table? (Y/N): ";
+		INPUT ""TMP$
+
+		CALL $STRING,1,TMP$											! to uppercase
+
+		IF TMP$="Y" OR TMP$="y"
+			GOSUB GET_STATUS_TABLE
+		ENDIF
+	WEND
+RETURN
+
+GET_COMBINED:
+	TMP$=""														! get in the loop
+	WHILE TMP$<>"Y" AND TMP$<>"N"
+		PRINT @0,ROW;'CL';TAB(5);"Is this a combined report? (Y/N): ";
+		INPUT ""TMP$
+
+		CALL $STRING,1,TMP$									! to uppercase
+
+		IF TMP$="Y" OR TMP$="y"
+			COMBINED=TRUE
+		ELSE
+			COMBINED=FALSE
+		ENDIF
+	WEND
+	ROW=ROW+1
+RETURN
+
+! program exit point
+FINISH:
+	CLOSE
+	END
+
+! error opening a file
+FILE_FAILURE:
+	TMP$="UNABLE TO OPEN ",XFILE$,", CALL DAKCS SUPPORT!"
+	CALL "OKBOX",TMP$,5,5
+	GOTO FINISH
+
+! generic errors
+ERR_HANDLER:
+	CALL $PCORE,""												! generate a pcore file
+
+	S8=SPC(8)													! error #
+	S10=SPC(10)													! error line
+	CALL "GERROR",S8,S10,"3/C500154b"					! show it to 'em
