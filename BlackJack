@@ -1,0 +1,506 @@
+! *****************************************************************************
+! *  Program: Let's play some BLACKJACK
+! *  Programmer: JOHN D MOSS
+! *  Purpose:  Play BlackJack
+! *****************************************************************************
+! ♠♥♦♣
+
+DIM S$[5],C$[14],TEMP$[3],PERCENT$[10],USER$[20],U$[50],UC$[50]
+DIM RESULTSTR$[50],DEALERSTR$[50],PLAYERSTR$[50],TMP$[100],SHUFFLE$[20]
+DIM 3%,CURRENT,PLAYER_HAND[10],DEALER_HAND[10],PLAYER_CURRENT,DEALER_CURRENT,CHECK_HAND[10]
+
+
+! *****************************************************************************
+DO_SETS:
+	! Get the current user
+	TMP$="$$whoami"
+	CALL $CHNLNO,SCH
+	OPEN #SCH,TMP$
+	READ #SCH;TMP$;
+	USER$=TMP$[1,LEN(TMP$)-1]
+	FOR I=1 TO 20
+		IF USER$[I,I] = "" USER$[I,I] = " "
+	NEXT I
+
+	! Set card and symbol strings
+	S$ = "SHDC?"
+	C$ = "A2345678910JQK"
+
+	! Build blackjackstats if it does not exist
+	CALL $FINDF,"/u/sting/10/BLACKJACKSTATS@",RET
+	IF NOT RET SYSTEM "xibld -r25 -d1:50 -n -i0 /u/sting/10/BLACKJACKSTATS@"
+	CALL $CHNLNO,FCH
+	OPEN #FCH,"/u/sting/10/BLACKJACKSTATS@"
+
+	! Get the current user stats
+	U$=USER$
+	UC$=U$
+	SEARCH #FCH,2,1;U$,U1,U2
+	IF NOT U2 AND U$[1,LEN(UC$)]=UC$
+		! Read user stats if they exist
+		TOTAL_WIN = U$[21,30]
+		TOTAL_LOSE = U$[31,40]
+		TOTAL_DRAW = U$[41,50]
+	ELSE
+		! Add user stats if they don't exist
+		U$=USER$
+		U$[21]=TOTAL_WIN USING "&&&&&&&&&&"
+		U$[31]=TOTAL_LOSE USING "&&&&&&&&&&"
+		U$[41]=TOTAL_DRAW USING "&&&&&&&&&&"
+		SEARCH #FCH,4,1;U$,U1,U2
+	ENDIF
+
+
+! *****************************************************************************
+DO_PROMPTS:
+	PRINT 'CS'
+	PRINT @0,1;"!BLACKJACK! - WELCOME ";USER$
+
+	! Ask user for number of decks
+	INPUT @0,5;"NUMBER OF DECKS? [ENTER]=4  :"TMP$
+	IF TMP$="" TMP$="4"
+	TMP=TMP$
+	IF TMP <= 0 TMP = 1
+	IF TMP > 10 TMP = 10
+	PRINT @0,5;'CL';"NUMBER OF DECKS? [ENTER]=4  :";TMP
+	TOTAL_DECKS = TMP
+
+	! Ask user for shuffle rounds, great for card counting practice
+	INPUT @0,6;"NUMBER OF ROUNDS BEFORE SHUFFLE? [ENTER=1]  :"TMP$
+	IF TMP$="" TMP$=1
+	TMP=TMP$
+	IF TMP <= 0 TMP = 1
+	IF TMP > (TOTAL_DECKS*5) TMP = TOTAL_DECKS*5
+	PRINT @0,6;'CL';"NUMBER OF ROUNDS BEFORE SHUFFLE? [ENTER=1]  :"TMP
+	SHUFFLE_ROUNDS = TMP
+
+	PRINT ""
+	INPUT "ARE THESE SETTINGS CORRECT? (Y)es, (N)o  :"TMP$
+	IF TMP$="NO" OR TMP$="No" OR TMP$="N" OR TMP$="n"
+		GOTO DO_PROMPTS
+	ENDIF
+
+	DIM DECK$[104*TOTAL_DECKS],TMPDECK$[104*TOTAL_DECKS]
+	DIM 3%,CA[52*TOTAL_DECKS]
+
+
+! *****************************************************************************
+DO_RESET:
+	! Reset the game variables
+	CURRENT = 1
+	PLAYER_CURRENT = 0
+	DEALER_CURRENT = 0
+	DEALER_VALUE = 0
+	PLAYER_VALUE = 0
+	RESULT = 0
+	DEALERSTR$=""
+	PLAYERSTR$=""
+
+	PLAYER=0
+	DEALER=1
+
+	! Reshuffle deck if cards are low or we hit our shuffle rounds
+	CURRENT_ROUND = CURRENT_ROUND -1
+	IF CURRENT_ROUND <= 0 OR LEN(DECK$) <= 40
+		! Use datetime for randomness
+	        RANDINT = DTFORMAT$(DTNOW(0),"SSNNHHDDMMYYYY")
+	        RANDOM RANDINT
+
+		CURRENT_ROUND = SHUFFLE_ROUNDS
+		SHUFFLE$="DECK SHUFFLED"
+
+		! Set the cards of the deck out in order
+		FOR I=1 TO 52*TOTAL_DECKS
+			DECK_MODIFIER = INT((I-1)/52)
+			CA[I] = I-(52*DECK_MODIFIER)
+		NEXT I
+
+		! Shuffle twice, why not?
+		GOSUB DO_SHUFFLE \ GOSUB DO_SHUFFLE
+	ELSE
+		SHUFFLE$=""
+	ENDIF
+
+	! Reset the player hands
+	FOR I=0 TO 10
+		PLAYER_HAND[I] = 0
+		DEALER_HAND[I] = 0
+	NEXT I
+
+	! Draw a card for the dealer
+	DRAW = DEALER
+	GOSUB DO_DRAW
+	! Give the dealer a mystery card
+	DEALER_HAND[1] = "99"
+	! Ace debugging DEALER_HAND[0]=1
+
+	! Draw a card for the player
+	DRAW = PLAYER
+	GOSUB DO_DRAW
+
+	! Go to draw cards
+	GOSUB DO_DISPLAY
+
+! *****************************************************************************
+DO_INPUT:
+	INPUT @0,22;'CL';"1. HIT    2. HOLD    3. STATS    4. QUIT  :"TMP$
+	IF TMP$="1" OR TMP$="HIT"
+		GOTO DO_HIT
+	ELSE IF TMP$="2" OR TMP$="HOLD"
+		GOTO DO_HOLD
+	ELSE IF TMP$="3" OR TMP$="STATS"
+		GOTO DO_DRAW_STATS
+	ELSE IF TMP$="4" OR TMP$="Q" OR TMP$="QUIT"
+		GOTO DO_EXIT
+	ELSE IF TMP$="RESET"
+		GOTO DO_RESET
+	ELSE
+		GOTO DO_INPUT
+	ENDIF
+
+
+! *****************************************************************************
+DO_SHUFFLE:
+	DECK$=""								! Clear deck
+
+	! Shuffle cards by going through the deck one by one and randomly swapping the cards
+	FOR I=1 TO 52*TOTAL_DECKS
+		TEMP1 = INT(RND(52*TOTAL_DECKS)+1)
+		TEMP2 = CA[I]
+		TEMP3 = CA[TEMP1]
+		CA[I] = TEMP3
+		CA[TEMP1] = TEMP2					! Shuffle card array
+	NEXT I
+
+	! Build the deck string after shuffling
+	FOR I=1 TO 52*TOTAL_DECKS
+		TMP$=CA[I] USING "&&"
+		DECK$=DECK$+TMP$
+	NEXT I
+
+RETURN
+
+! *****************************************************************************
+DO_DRAW: ! Draws a single card from the deck
+	MAXCARDS = LEN(DECK$)/2
+
+	TMPDECK$=""
+	CARD = INT(RND(MAXCARDS)+1)
+	NEWCARD = DECK$[(CARD*2)-1,CARD*2]
+	IF NEWCARD=0 SUSPEND
+	FOR I=1 TO LEN(DECK$)
+		IF (I < (CARD*2)-1) OR (I>(CARD*2))
+			TMPDECK$=TMPDECK$+DECK$[I,I]
+		ENDIF
+	NEXT I
+	DECK$=TMPDECK$
+
+	IF DRAW = PLAYER
+		PLAYER_HAND[PLAYER_CURRENT] = NEWCARD
+		PLAYER_CURRENT = PLAYER_CURRENT+1
+	ELSE
+		DEALER_HAND[DEALER_CURRENT] = NEWCARD
+		DEALER_CURRENT = DEALER_CURRENT+1
+	ENDIF
+RETURN
+
+! *****************************************************************************
+DO_DISPLAY:
+	PRINT 'CS'
+	! Get the hand values
+	GOSUB DO_GET_VALUES
+
+	X_OFFSET=0
+	Y_OFFSET=1
+
+	PRINT @0,0;"DEALER HAND: [";DEALER_VALUE;"]";DEALERSTR$
+	PRINT @66,0;SHUFFLE$
+
+	FOR I=0 TO 10
+		IF DEALER_HAND[I] <> 0
+			CURRENT_CARD = DEALER_HAND[I]
+			GOSUB DO_DRAW_CARD
+			! Move drawing position one card to the right
+			X_OFFSET = X_OFFSET + 8
+		ENDIF
+	NEXT I
+
+	! Move the draw position down on the screen
+	X_OFFSET = 0
+	Y_OFFSET = Y_OFFSET + 8
+
+	FOR I=0 TO 10
+		IF PLAYER_HAND[I] <> 0
+			CURRENT_CARD = PLAYER_HAND[I]
+			GOSUB DO_DRAW_CARD
+			X_OFFSET = X_OFFSET + 8
+		ENDIF
+	NEXT I
+
+	PRINT @0,18;"YOUR HAND: [";PLAYER_VALUE;"]";PLAYERSTR$
+
+RETURN
+
+! *****************************************************************************
+DO_DRAW_CARD:
+	! Card 99 is a mystery card (?) otherwise draw the suit/face value
+	IF CURRENT_CARD = 99
+		SUIT=5
+		TEMP$=""
+		CLEN=0
+	ELSE
+		SUIT=INT((CURRENT_CARD-1)/13)+1
+		CARD=CURRENT_CARD-((SUIT-1)*13)
+		IF CARD=10
+			CLEN=1
+		ELSE
+			CLEN=0
+		ENDIF
+		IF CARD>10
+			CSTART=1
+		ELSE
+			CSTART=0
+		ENDIF
+		TEMP$=""
+		TEMP$=C$[CARD+CSTART,CARD+CSTART+CLEN]
+	ENDIF
+
+	! Draw the card borders
+	FOR II=1 TO 7
+		PRINT @II+X_OFFSET,1+Y_OFFSET;"*"
+		PRINT @1+X_OFFSET,II+Y_OFFSET;"*"
+		PRINT @7+X_OFFSET,II+Y_OFFSET;"*"
+		PRINT @II+X_OFFSET,7+Y_OFFSET;"*"
+	NEXT II
+
+	! Draw the card suit and face value
+	PRINT @2+X_OFFSET,2+Y_OFFSET;TEMP$
+	PRINT @6-CLEN+X_OFFSET,6+Y_OFFSET;TEMP$
+	PRINT @4+X_OFFSET,4+Y_OFFSET;S$[SUIT,SUIT]
+	PRINT @8+X_OFFSET,8+Y_OFFSET;""
+
+RETURN
+
+! *****************************************************************************
+! Get the total hand values for the dealer and the player
+DO_GET_VALUES:
+
+	! Get the dealer hand value
+	FOR I=0 TO 10
+		CHECK_HAND[I]=DEALER_HAND[I]
+	NEXT I
+	GOSUB DO_GET_VALUE
+	DEALER_VALUE = HANDVALUE
+
+	! Get the player hand value
+	FOR I=0 TO 10
+			CHECK_HAND[I]=PLAYER_HAND[I]
+	NEXT I
+	GOSUB DO_GET_VALUE
+	PLAYER_VALUE = HANDVALUE
+
+	DO_GET_VALUE:
+		HANDVALUE=0
+		ACECOUNT=0
+		! Sum up the value of all non-aces and count the aces
+		FOR I=0 TO 10
+			CURRENT_CARD = CHECK_HAND[I]
+			IF CURRENT_CARD <> 0 AND CURRENT_CARD <> 99
+			        SUIT=INT((CURRENT_CARD-1)/13)
+			        FACE=CURRENT_CARD-(SUIT*13)
+				IF FACE < 10
+					VALUE=FACE
+				ELSE IF FACE < 14
+					VALUE=10
+				ENDIF
+				IF FACE <> 1
+					HANDVALUE=HANDVALUE+VALUE
+				ELSE
+					ACECOUNT=ACECOUNT+1
+				ENDIF
+			ENDIF
+		NEXT I
+		! Aces count as 11 or 1 depending on if it will bust the player
+		FOR I=0 TO 10
+			CURRENT_CARD = CHECK_HAND[I]
+			IF CURRENT_CARD <> 0 AND CURRENT_CARD <> 99
+					SUIT=INT((CURRENT_CARD-1)/13)
+					FACE=CURRENT_CARD-(SUIT*13)
+					IF FACE = 1
+						IF HANDVALUE <= 11-ACECOUNT
+							HANDVALUE = HANDVALUE+11
+						ELSE
+							HANDVALUE = HANDVALUE+1
+						ENDIF
+					ENDIF
+			ENDIF
+		NEXT I
+
+	RETURN
+RETURN
+
+! *****************************************************************************
+! Logic when the player holds, win/loss is determined here
+DO_HOLD:
+	! Force the player to hit at least once
+	IF PLAYER_HAND[1]=0 GOTO DO_INPUT
+
+	! Replace the mystery card with a real card, simulating flipping it over
+	DRAW = DEALER
+	GOSUB DO_DRAW
+	GOSUB DO_GET_VALUES
+
+	! Default values
+	DEALERSTR$=""
+	PLAYERSTR$=""
+	DEALER_MAX = 17
+	DEALER_BLACKJACK = FALSE
+	PLAYER_BLACKJACK = FALSE
+
+	! Check if all royal/ace for blackjacks
+	DEALER_ROYAL = TRUE
+	PLAYER_ROYAL = TRUE
+	FOR I=0 TO 10
+		! Check Dealer
+		SUIT = INT((DEALER_HAND[I]-1)/13)
+		FACE = DEALER_HAND[I]-(SUIT*13)
+		IF FACE <= 10 AND FACE <> 1 DEALER_ROYAL = FALSE
+		! Check PLayer
+		SUIT = INT((PLAYER_HAND[I]-1)/13)
+		FACE = PLAYER_HAND[I]-(SUIT*13)
+		IF FACE <= 10 AND FACE <> 1 PLAYER_ROYAL = FALSE
+	NEXT I
+
+	! 0=LOSE,1=WIN,2=DRAW
+	RESULT = 0
+
+	IF DEALER_VALUE = 21 AND DEALER_ROYAL = TRUE AND DEALER_HAND[2]=0
+		DEALER_BLACKJACK = TRUE
+		DEALERSTR$ = " - BLACKJACK!"
+	ENDIF
+	IF PLAYER_VALUE = 21 AND PLAYER_ROYAL AND PLAYER_HAND[2]=0
+		PLAYER_BLACKJACK = TRUE
+		PLAYERSTR$ = " - BLACKJACK!"
+	ENDIF
+	FOR I=0 TO 10
+		! Set max to 18 if dealer has an 18 ( hit on soft 17 )
+		IF INT(DEALER_HAND[I]/13) = 0 DEALER_MAX = 18
+	NEXT I
+	WHILE DEALER_VALUE < DEALER_MAX AND DEALER_CURRENT < 10
+		! Keep drawing until dealer hits their limit
+		GOSUB DO_DRAW
+		GOSUB DO_GET_VALUES
+	WEND
+
+	! determine who wins. 2-card 21 wins over 2+ card 21
+	IF DEALER_VALUE > 21
+		DEALERSTR$ = " - BUST!"
+		RESULTSTR$  ="DEALER BUST! - YOU WIN!"
+		RESULT = 1
+	ELSE IF DEALER_VALUE = PLAYER_VALUE
+		IF DEALER_BLACKJACK AND NOT PLAYER_BLACKJACK
+			RESULTSTR$ = "YOU LOSE!"
+			RESULT = 0
+		ELSE IF NOT DEALER_BLACKJACK AND PLAYER_BLACKJACK
+			RESULTSTR$ = "YOU WIN!"
+			RESULT = 1
+		ELSE
+			RESULTSTR$  ="DRAW!"
+			RESULT = 2
+		ENDIF
+	ELSE IF PLAYER_VALUE < DEALER_VALUE
+		RESULTSTR$="YOU LOSE!"
+		RESULT = 0
+	ELSE
+		RESULTSTR$="YOU WIN!"
+		RESULT = 1
+	ENDIF
+
+	GOSUB DO_STATS
+	GOSUB DO_DISPLAY
+
+	PRINT @0,20;RESULTSTR$
+	INPUT @0,22;"PRESS [ENTER] TO RESTART"TMP$
+	GOTO DO_RESET
+
+! *****************************************************************************
+DO_HIT:
+	DRAW = PLAYER
+	GOSUB DO_DRAW
+	GOSUB DO_GET_VALUES
+	IF PLAYER_VALUE > 21 PLAYERSTR$ = " - BUST!"
+	GOSUB DO_DISPLAY
+
+	IF PLAYER_VALUE <= 21
+		GOTO DO_INPUT
+	ELSE
+		RESULT_DRAW = FALSE
+		RESULT_WIN = FALSE
+		GOSUB DO_STATS
+		PRINT @0,20;"BUST! YOU LOSE!"
+		INPUT @0,22;"PRESS [ENTER] TO RESTART "TMP$
+		GOTO DO_RESET
+	ENDIF
+
+	! Max of 10 cards
+	IF DARW = PLAYER AND PLAYER_CURRENT = 10 GOTO DO_HOLD
+
+! *****************************************************************************
+DO_STATS:
+	! Handle the player stats here
+	IF RESULT = 2
+		TOTAL_DRAW = TOTAL_DRAW + 1
+	ELSE IF RESULT = 1
+		TOTAL_WIN = TOTAL_WIN + 1
+	ELSE
+		TOTAL_LOSE = TOTAL_LOSE + 1
+	ENDIF
+
+	! Find existing user stats
+	U$=USER$
+	UC$=U$
+	SEARCH #FCH,2,1;U$,U1,U2
+	IF NOT U2 AND U$[1,LEN(UC$)]=UC$
+		! Remove old status and write in new ones
+		SEARCH #FCH,5,1;U$,U1,U2
+		U$=USER$
+		U$[21]=TOTAL_WIN USING "&&&&&&&&&&"
+		U$[31]=TOTAL_LOSE USING "&&&&&&&&&&"
+		U$[41]=TOTAL_DRAW USING "&&&&&&&&&&&"
+		SEARCH #FCH,4,1;U$,U1,U2
+	ENDIF
+
+RETURN
+
+! *****************************************************************************
+DO_DRAW_STATS:
+	PRINT 'CS'
+	PRINT @0,0;"YOUR BLACKJACK STATS:"
+	PRINT @0,3;"PLAYER: ";USER$
+	TOTAL_GAMES = TOTAL_WIN + TOTAL_LOSE + TOTAL_DRA
+	PRINT @0,5;"TOTAL GAMES:";TAB(20);TOTAL_GAMES
+	PRINT @0,6;"TOTAL WINS:";TAB(20);TOTAL_WIN
+	PRINT @0,7;"TOTAL LOSSES:";TAB(20);TOTAL_LOSE
+	PRINT @0,8;"TOTAL DRAW:";TAB(20);TOTAL_DRAW
+
+	IF TOTAL_WIN > 0 AND TOTAL_LOSE > 0
+		WIN_PERCENT = (TOTAL_WIN/(TOTAL_WIN+TOTAL_LOSE))*100
+	ELSE
+		WIN_PERCENT = 0
+	ENDIF
+
+	PERCENT$ = WIN_PERCENT USING "%&&.&&"
+	PRINT @0,10;"WIN PERCENTAGE:";TAB(21);PERCENT$
+
+	INPUT @0,22;"PRESS [ENTER] TO RETURN "TMP$
+
+	GOSUB DO_DISPLAY
+	GOTO DO_INPUT
+
+
+! *****************************************************************************
+DO_EXIT:
+	PRINT 'CS'
+	PRINT "BLACKJACK CLOSED"
+	PRINT ""
+	END
